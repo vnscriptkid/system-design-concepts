@@ -1,0 +1,11 @@
+version: '3.8'
+services:
+  pg1:
+    image: postgres:14.5
+    container_name: pg1
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: 123
+      POSTGRES_DB: test
+    ports:
+      - "5434:5432"
