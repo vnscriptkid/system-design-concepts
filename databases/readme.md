@@ -112,5 +112,151 @@ INSERT INTO accounts (account_id, balance) VALUES
 - ON DELETE RESTRICT (default): 
     - Strict. Why? Maintain correct data integrity
 
+12. Explain lost update problem
+- Changes made by one transaction are overwritten by another transaction
+- Happens in isolation level READ COMMITTED, READ UNCOMMITTED
+- Does not happen in isolation level REPEATABLE READ, SERIALIZABLE
 
+13. REPEATABLE READ behaviors across databases
+- MySQL: 
+    - Locks rows that are read
+    - Locks rows that are written
+- PostgreSQL:
+    - Locks rows that are written
+    - Does not lock rows that are read
+        - Why? PostgreSQL uses MVCC (Multi-Version Concurrency Control). This means that when a row is updated, the old version of the row is kept in the database. This allows other transactions to read the old version of the row. This is why PostgreSQL does not need to lock rows that are read.
 
+14. READ UNCOMMITTED behaviors across databases
+- MySQL:
+    - susceptible to dirty reads
+- PostgreSQL:
+    - Just like READ COMMITTED, does not allow dirty reads
+    - Lock
+        - Does not lock rows that are read
+        - Does not lock rows that are written
+
+15. READ COMMITTED behaviors across databases
+- MySQL:
+- PostgreSQL:
+    - Does not allow dirty reads
+    - Does not lock rows that are read
+    - Does not lock rows that are written 
+        - susceptible to lost update problem, last write wins
+        - Fix:
+            - Locking: `SELECT ... FOR UPDATE`
+            - Optimistic locking: `UPDATE ... WHERE balance = 1000`
+
+16. Implicit locking in PostgreSQL across isolation levels
+- READ COMMITTED:
+    - Does not lock rows that are read
+    - Does not lock rows that are written
+- REPEATABLE READ:
+    - Does not lock rows that are read
+    - Locks rows that are written
+- SERIALIZABLE: (same as REPEATABLE READ)
+    - Does not lock rows that are read
+    - Locks rows that are written
+
+17. SERIALIZABLE in PostgreSQL
+- What does word "serializable" mean?
+    - Transactions are executed one after another (serial order): T1 -> T2 || T2 -> T1
+- How Postgres check for serializability error?
+    - Check dependencies between transactions
+- Consistency guarantee by:
+    - Locking: immediate consistency for writes (manage write conflicts)
+    - SSI: broad consistency by ensuring overall serializability
+        - Checks for serializability errors
+        - If error, abort transaction
+        - If no error, commit transaction
+- Serialization error usecase 1:
+    - T1 and T2 are not serializable because T1 reads the sum of all balances before T2 commits. If T1 were to read the sum of all balances after T2 commits, then T1 and T2 would be serializable.
+
+```sql
+
+CREATE TABLE accounts (
+  id SERIAL PRIMARY KEY,
+  balance INT
+);
+
+TRUNCATE TABLE accounts;
+-- Insert initial data
+INSERT INTO accounts (id, balance) VALUES (1, 100);
+INSERT INTO accounts (id, balance) VALUES (2, 200);
+```
+
+| Time Order | Operation in Transaction 1 (T1)                     | Operation in Transaction 2 (T2)              |
+|------------|-----------------------------------------------------|----------------------------------------------|
+| 1          | `BEGIN;`                                            |                                              |
+| 2          | `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;`     |                                              |
+| 3          | `SELECT SUM(balance) FROM accounts;`                |                                              |
+| 4          |                                                     | `BEGIN;`                                     |
+| 5          |                                                     | `SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;` |
+| 6          |                                                     | `UPDATE accounts SET balance = 250 WHERE id = 1;` |
+| 7          |                                                     | `COMMIT;`                                    |
+| 8          | `INSERT INTO accounts (balance) VALUES (300);`      |                                              |
+| 9          | `COMMIT;`                                           |                                              |
+
+ERROR:  could not serialize access due to read/write dependencies among transactions
+DETAIL:  Reason code: Canceled on identification as a pivot, during write.
+HINT:  The transaction might succeed if retried.
+
+- Line 8: Postgres considers the possibility of dependency: INSERT might be influenced by results of SELECT,
+which has been invalidated by UPDATE in T2
+
+18. Real world usecase of REPEATABLE READ
+- Need calculation based on multiple rows and make decision based on that calculation
+    - Calculation remains consistent throughout transaction
+
+19. READ COMMITTED with LOCKING
+```sql
+CREATE TABLE events (
+    event_id SERIAL PRIMARY KEY,
+    name VARCHAR(255)
+    -- total_tickets INT,
+    -- tickets_sold INT DEFAULT 0
+);
+
+CREATE TABLE tickets (
+    ticket_id SERIAL PRIMARY KEY,
+    event_id INT,
+    status VARCHAR(20) DEFAULT 'available', -- e.g., 'available', 'sold', 'reserved'
+    buyer_name VARCHAR(255) NULL,
+    FOREIGN KEY (event_id) REFERENCES events(event_id)
+);
+
+INSERT INTO events (event_id, name) VALUES (1, 'Foo');
+
+INSERT INTO tickets (event_id, status) 
+SELECT 1, 'available'
+FROM generate_series(1, 30); -- 30 tickets
+
+BEGIN;
+-- Select an Available Ticket:
+SELECT ticket_id FROM tickets
+WHERE event_id = 1 AND status = 'available'
+LIMIT 1
+FOR UPDATE;
+-- Mark the Ticket as Sold:
+UPDATE tickets 
+SET status = 'sold', buyer_name = 'John Doe'
+WHERE ticket_id = :ticket_id; -- ticket_id from previous SELECT (application code)
+COMMIT:
+```
+- 2 users trying to book the same ticket, there's one would be blocked, what happen to him then after lock is released?
+    - He would get an error because the ticket is already sold
+        - Resolution: retry
+
+- Retry
+```sql
+BEGIN;
+-- Select an Available Ticket:
+SELECT ticket_id FROM tickets
+WHERE event_id = 1 AND status = 'available'
+LIMIT 1
+FOR UPDATE SKIP LOCKED;
+-- Mark the Ticket as Sold:
+UPDATE tickets
+SET status = 'sold', buyer_name = 'John Doe'
+WHERE ticket_id = :ticket_id; -- ticket_id from previous SELECT (application code)
+COMMIT:
+```
