@@ -1,0 +1,44 @@
+version: '3.7'
+services:
+  citus_coordinator:
+    image: 'citusdata/citus:11.3'
+    container_name: citus_coordinator
+    ports:
+      - "5435:5432"
+    labels:
+      - "traefik.enable=true"
+    environment:
+      POSTGRES_DB: test
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: 123
+    volumes:
+      - citus_coordinator_data:/var/lib/postgresql/data
+
+  citus_worker_1:
+    image: 'citusdata/citus:latest'
+    container_name: citus_worker_1
+    labels:
+      - "traefik.enable=true"
+    environment:
+      POSTGRES_DB: test
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: 123
+    volumes:
+      - citus_worker_1_data:/var/lib/postgresql/data
+
+  citus_worker_2:
+    image: 'citusdata/citus:latest'
+    container_name: citus_worker_2
+    labels:
+      - "traefik.enable=true"
+    environment:
+      POSTGRES_DB: test
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: 123
+    volumes:
+      - citus_worker_2_data:/var/lib/postgresql/data
+
+volumes:
+  citus_coordinator_data:
+  citus_worker_1_data:
+  citus_worker_2_data:
