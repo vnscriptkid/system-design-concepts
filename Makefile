@@ -9,3 +9,6 @@ down:
 
 psql:
 	docker exec -it pg1 psql -U user -d test
+
+redis:
+	docker exec -it redis1 redis-cli
