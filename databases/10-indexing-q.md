@@ -5,3 +5,5 @@
 - Multiple indexes available, optimizer will choose the best one
     - How?
     - Can we force the optimizer to use a specific index? 
+- SQL execution order: WHERE, GROUP BY, HAVING, ORDER BY, LIMIT
+    

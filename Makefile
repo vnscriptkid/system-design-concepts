@@ -12,3 +12,6 @@ psql:
 
 redis:
 	docker exec -it redis1 redis-cli
+
+redis-sh:
+	docker exec -it redis1 sh

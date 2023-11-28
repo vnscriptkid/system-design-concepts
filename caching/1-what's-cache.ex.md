@@ -26,33 +26,51 @@ Objective: Understand how different cache eviction policies affect what data is 
 
 Steps:
 
-Configure Redis with a max memory limit by editing the redis.conf file, setting maxmemory to a low value like 2mb.
-Set maxmemory-policy to different values (allkeys-lru, volatile-lru, allkeys-random, etc.).
+- Configure Redis with a max memory limit by editing the redis.conf file, setting maxmemory to a low value like 2mb.
+- Set maxmemory-policy to different values (allkeys-lru, volatile-lru, allkeys-random, etc.).
 Populate Redis with more data than the memory limit.
-Observe which keys are evicted based on the policy.
-Concepts Demonstrated: This exercise demonstrates cache eviction policies, which are essential when dealing with limited cache sizes.
+- Observe which keys are evicted based on the policy.
+- Concepts Demonstrated: This exercise demonstrates cache eviction policies, which are essential when dealing with limited cache sizes.
+
+```bash
+# redis.conf
+maxmemory 2mb
+
+# maxmemory-policy default is noeviction
+# set maxmemory-policy to allkeys-lru
+maxmemory-policy allkeys-lru
+
+# volatile-lru vs allkeys-lru
+# volatile-lru will evict keys with an expire set, allkeys-lru will evict any key
+
+# how to set config from redis-cli
+> config set maxmemory 2mb
+
+# how get config from redis-cli
+> config get maxmemory
+```
 
 ### Exercise 4: Caching Database Queries
 Objective: Cache expensive database queries using Redis.
 
 Steps:
 
-Identify a slow-running database query in your application.
-Execute the query and cache the result in Redis with a key that uniquely identifies the query and its parameters.
-Modify the application to check the cache before hitting the database when the query is requested again.
-Measure the time difference between fetching from the cache vs. the database.
-Concepts Demonstrated: This shows how caching can reduce the load on databases and speed up data retrieval.
+- Identify a slow-running database query in your application.
+- Execute the query and cache the result in Redis with a key that uniquely identifies the query and its parameters.
+- Modify the application to check the cache before hitting the database when the query is requested again.
+- Measure the time difference between fetching from the cache vs. the database.
+- Concepts Demonstrated: This shows how caching can reduce the load on databases and speed up data retrieval.
 
 ### Exercise 5: Implementing Cache-Aside Pattern
 Objective: Implement the cache-aside pattern in a sample application.
 
 Steps:
 
-Create a simple web application that retrieves data from a database.
-Before querying the database, check if the data is available in the Redis cache.
-If the cache misses, fetch the data from the database, cache it, and then return the result.
-Simulate a high number of requests and observe the performance impact.
-Concepts Demonstrated: The cache-aside pattern is a common caching pattern where the application is responsible for loading data into the cache from the database.
+- Create a simple web application that retrieves data from a database.
+- Before querying the database, check if the data is available in the Redis cache.
+- If the cache misses, fetch the data from the database, cache it, and then return the result.
+- Simulate a high number of requests and observe the performance impact.
+- Concepts Demonstrated: The cache-aside pattern is a common caching pattern where the application is responsible for loading data into the cache from the database.
 
 ### Exercise 6: Cache Warm-Up
 Objective: Pre-load frequently accessed data into the cache to avoid cold starts.
@@ -68,11 +86,13 @@ Concepts Demonstrated: Cache warm-up is a proactive approach to caching, which e
 Objective: Implement session caching in a web application.
 
 Steps:
+- Configure your web application to use Redis for storing session data.
+- Create a login mechanism that stores user sessions in Redis.
+- Simulate user logins and subsequent requests to demonstrate that session data is being retrieved from Redis.
+- Concepts Demonstrated: Session caching is a real-world use case for caching, where user session information is stored in a cache for quick access.
 
-Configure your web application to use Redis for storing session data.
-Create a login mechanism that stores user sessions in Redis.
-Simulate user logins and subsequent requests to demonstrate that session data is being retrieved from Redis.
-Concepts Demonstrated: Session caching is a real-world use case for caching, where user session information is stored in a cache for quick access.
+Demo:
+- https://github.com/expressjs/session/blob/master/index.js#L518
 
 ### Exercise 8: Content Delivery Network (CDN) Usage
 Objective: Use a CDN to cache static assets of a website.

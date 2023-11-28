@@ -213,3 +213,57 @@ CREATE INDEX idx_users_name_signup_date_active ON users (name, signup_date, acti
 -- optimizer will pick this index over above index
 CREATE INDEX idx_users_name_active_signup_date ON users (name, active, signup_date);
 ```
+
+#### Inequality kills performance
+
+```sql
+-- create tables orders that has `status` field of type enum (pending, processing, shipped, delivered)
+CREATE TYPE enum_order_status AS ENUM ('pending', 'processing', 'shipped', 'delivered');
+
+CREATE TABLE orders (
+    order_id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    status enum_order_status NOT NULL
+);
+
+
+-- seed data
+INSERT INTO orders (status, user_id)
+SELECT 'pending'::enum_order_status, 1
+FROM generate_series(1, 10000000);
+-- insert 10 records with status = 'processing'
+-- insert 10 records with status = 'processing'
+INSERT INTO orders (status, user_id)
+SELECT 'processing'::enum_order_status, (ARRAY[2,3,4])[floor(random()*3)+1]
+FROM generate_series(1, 10);
+-- insert 10 records with status = 'shipped'
+INSERT INTO orders (status, user_id)
+SELECT 'shipped'::enum_order_status, (ARRAY[4,5,6])[floor(random()*3)+1]
+FROM generate_series(1, 10);
+-- insert 10 records with status = 'delivered'
+INSERT INTO orders (status, user_id)
+SELECT 'delivered'::enum_order_status, (ARRAY[6,7,8])[floor(random()*3)+1]
+FROM generate_series(1, 10);
+
+
+-- query
+EXPLAIN ANALYZE SELECT * FROM orders WHERE status in ('processing', 'shipped', 'delivered');
+EXPLAIN ANALYZE SELECT * FROM orders WHERE status = 'processing' OR status = 'shipped' OR status = 'delivered';
+EXPLAIN ANALYZE SELECT * FROM orders WHERE status != 'pending';
+
+-- create index
+CREATE INDEX idx_orders_status ON orders (status);
+EXPLAIN ANALYZE SELECT * FROM orders WHERE status != 'pending'; -- can't use index, seq scan
+EXPLAIN ANALYZE SELECT * FROM orders WHERE status = 'processing' OR status = 'shipped' OR status = 'delivered'; -- can use index
+EXPLAIN ANALYZE SELECT * FROM orders WHERE status in ('processing', 'shipped', 'delivered'); -- can use index
+
+-- query on 2 fields
+EXPLAIN ANALYZE SELECT * FROM orders WHERE status != 'pending' AND user_id = 4;
+-- create index on (status, user_id) 
+CREATE INDEX idx_orders_status_user_id ON orders (status, user_id); -- can use index, ~13ms
+DROP INDEX idx_orders_status_user_id;
+-- create index on (user_id, status)
+CREATE INDEX idx_orders_user_id_status ON orders (user_id, status); -- can use index, ~0.3ms (faster)
+-- why it's faster? because the first field in index is more selective
+-- more selective: the number of rows that match a condition is small compared to the total number of rows in a table
+```
