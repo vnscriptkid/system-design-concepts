@@ -6,4 +6,6 @@
     - How?
     - Can we force the optimizer to use a specific index? 
 - SQL execution order: WHERE, GROUP BY, HAVING, ORDER BY, LIMIT
-    
+- Behind the scene, how is pattern matching using LIKE intepreted? 
+    - `x like 'abc%'` => `x >= 'abc' and x < 'abd'`
+    - work same as range query, index also works the same way as range query
