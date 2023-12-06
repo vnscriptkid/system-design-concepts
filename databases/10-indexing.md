@@ -408,3 +408,264 @@ CREATE INDEX idx_github_issues_status_severity ON github_issues (status, severit
 -- experiment: drop above index, create index on (status, severity, num_of_comments)
 CREATE INDEX idx_github_issues_status_severity_num_of_comments ON github_issues (status, severity, num_of_comments);
 ```
+
+#### Demo `work_mem`: Adjust such that sort can be done in memory
+```sql
+-- sample table
+CREATE TABLE test_data (
+    id serial PRIMARY KEY,
+    data_value int,
+    created_at timestamp default current_timestamp
+);
+
+-- seed data 10.000.000 records
+INSERT INTO test_data (data_value, created_at)
+SELECT (random()*100000)::int, 
+       timestamp '2021-01-01 00:00:00' + interval '1 minute' * (random()*525600)::int
+FROM generate_series(1,1000000);
+-- 50 bytes
+-- 1MB * 1024 * 1000 bytes / 50 bytes = 20480 rows
+
+-- show current work_mem
+SHOW work_mem;
+--  work_mem 
+-- ----------
+--  4MB
+-- (1 row)
+
+-- reduce work_mem to 1MB
+SET work_mem = '1MB';
+
+-- query that exceeds work_mem
+EXPLAIN ANALYZE SELECT data_value, created_at FROM test_data WHERE created_at > '2020-01-01' ORDER BY data_value DESC LIMIT 40000;
+-- Sort Method: external merge  Disk: 8552kB
+-- Worker 0:  Sort Method: external merge  Disk: 8472kB
+-- Worker 1:  Sort Method: external merge  Disk: 8504kB
+
+-- query that doesn't exceed work_mem
+SELECT count(*) FROM test_data WHERE created_at > '2021-12-30';
+EXPLAIN ANALYZE SELECT data_value, created_at FROM test_data WHERE created_at > '2021-12-30' ORDER BY data_value DESC; -- ~5000 rows
+-- Sort Method: quicksort  Memory: 219kB
+-- Worker 0:  Sort Method: quicksort  Memory: 111kB
+-- Worker 1:  Sort Method: quicksort  Memory: 117kB
+
+SELECT count(*) FROM test_data WHERE created_at > '2021-09-30'; -- ~25000 rows
+EXPLAIN ANALYZE SELECT data_value, created_at FROM test_data WHERE created_at > '2021-09-30' ORDER BY data_value DESC; -- ~25000 rows
+-- Sort Method: external merge  Disk: 2224kB
+-- Worker 0:  Sort Method: external merge  Disk: 2136kB
+-- Worker 1:  Sort Method: external merge  Disk: 2176kB
+
+-- increase work_mem to 2MB
+SET work_mem = '4MB';
+EXPLAIN ANALYZE SELECT data_value, created_at FROM test_data WHERE created_at > '2021-09-30' ORDER BY data_value DESC; -- ~25000 rows
+-- Sort Method: quicksort  Memory: 6061kB
+-- Worker 0:  Sort Method: quicksort  Memory: 5993kB
+-- Worker 1:  Sort Method: quicksort  Memory: 6011kB
+```
+
+
+#### Demo index for `GROUP BY` on 1 field
+```sql
+-- create table
+CREATE TABLE users (
+    user_id SERIAL PRIMARY KEY,
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    country TEXT NOT NULL
+);
+
+-- seed data 10.000.000 records with country in 240 countries
+INSERT INTO users (first_name, last_name, country)
+SELECT 
+    md5(random()::text), 
+    md5(random()::text), 
+    (ARRAY['AF','AL','DZ','AS','AD','AO','AI','AQ','AG','AR','AM','AW','AU','AT','AZ','BS','BH','BD','BB','BY','BE','BZ','BJ','BM','BT','BO','BA','BW','BR','IO','VG','BN','BG','BF','BI','KH','CM','CA','CV','KY','CF','TD','CL','CN','CX','CC','CO','KM','CK','CR','HR','CU','CW','CY','CZ','CD','DK','DJ','DM','DO','TL','EC','EG','SV','GQ','ER','EE','ET','FK','FO','FJ','FI','FR','PF','GA','GM','GE','DE','GH','GI','GR','GL','GD','GU','GT','GG','GN','GW','GY','HT','HN','HK','HU','IS','IN','ID','IR','IQ','IE','IM','IL','IT','CI','JM','JP','JE','JO','KZ','KE','KI','XK','KW','KG','LA','LV','LB','LS','LR','LY','LI','LT','LU','MO','MK','MG','MW','MY','MV','ML','MT','MH','MR','MU','YT','MX','FM','MD','MC','MN','ME','MS','MA','MZ','MM','NA','NR','NP','NL','AN','NC','NZ','NI','NE','NG','NU','KP','MP','NO','OM','PK','PW','PS','PA','PG','PY','PE','PH','PN','PL','PT','PR','QA','CG','RE','RO','RU','RW','BL','SH','KN','LC','MF','PM','VC','WS','SM','ST','SA','SN','RS','SC','SL','SG','SX','SK','SI','SB','SO','ZA','KR','SS','ES','LK','SD','SR','SJ','SZ','SE','CH','SY','TW','TJ','TZ','TH','TG','TK','TO','TT','TN','TR','TM','TC','TV','VI','UG','UA','AE','GB','US','UY','UZ','VU','VA','VE','VN','WF','EH','YE','ZM','ZW'])[floor(random() * 240) + 1]
+FROM generate_series(1, 10000000);
+
+-- query
+EXPLAIN ANALYZE SELECT country, count(*) FROM users GROUP BY country;
+
+-- create index
+CREATE INDEX idx_users_country ON users (country);
+
+-- query
+EXPLAIN ANALYZE SELECT country, count(*) FROM users GROUP BY country;
+EXPLAIN ANALYZE SELECT country, count(*) FROM users WHERE country IN ('VN', 'SG') GROUP BY country;
+
+-- test=# select query, total_exec_time, mean_exec_time, calls, rows from pg_stat_statements where query ilike '%from users%';
+--                                                query                                                | total_exec_time |  mean_exec_time   | calls | rows 
+-- ----------------------------------------------------------------------------------------------------+-----------------+-------------------+-------+------
+--  SELECT country, count(*) FROM users GROUP BY country                                               |       3616.8505 |        904.212625 |     4 |  960
+--  SELECT country, count(*) FROM users WHERE country IN ($1, $2) GROUP BY country                     |       5701.8596 | 633.5399555555556 |     9 |   18
+
+-- reset pg_stat_statements
+SELECT pg_stat_statements_reset();
+
+-- test=# select query, total_exec_time, mean_exec_time, calls, rows from pg_stat_statements where query ilike '%from users%';
+--                                      query                                      |  total_exec_time   |   mean_exec_time   | calls | rows 
+-- --------------------------------------------------------------------------------+--------------------+--------------------+-------+------
+--  SELECT country, count(*) FROM users GROUP BY country                           | 2371.7812000000004 |  592.9453000000001 |     4 |  960
+--  SELECT country, count(*) FROM users WHERE country IN ($1, $2) GROUP BY country |           154.7948 | 14.072254545454545 |    11 |   22
+
+```
+
+## DEMO index for `GROUP BY` on 2 fields
+```sql
+-- DEMO index for `GROUP BY` on 2 fields
+-- create table
+CREATE TABLE users (
+    user_id SERIAL PRIMARY KEY,
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    country TEXT NOT NULL,
+    star_sign TEXT NOT NULL
+);
+
+-- seed data 10.000.000 records with country in 240 countries
+INSERT INTO users (first_name, last_name, country, star_sign)
+SELECT 
+    md5(random()::text), 
+    md5(random()::text),
+    (ARRAY['AF','AL','DZ','AS','AD','AO','AI','AQ','AG','AR','AM','AW','AU','AT','AZ','BS','BH','BD','BB','BY','BE','BZ','BJ','BM','BT','BO','BA','BW','BR','IO','VG','BN','BG','BF','BI','KH','CM','CA','CV','KY','CF','TD','CL','CN','CX','CC','CO','KM','CK','CR','HR','CU','CW','CY','CZ','CD','DK','DJ','DM','DO','TL','EC','EG','SV','GQ','ER','EE','ET','FK','FO','FJ','FI','FR','PF','GA','GM','GE','DE','GH','GI','GR','GL','GD','GU','GT','GG','GN','GW','GY','HT','HN','HK','HU','IS','IN','ID','IR','IQ','IE','IM','IL','IT','CI','JM','JP','JE','JO','KZ','KE','KI','XK','KW','KG','LA','LV','LB','LS','LR','LY','LI','LT','LU','MO','MK','MG','MW','MY','MV','ML','MT','MH','MR','MU','YT','MX','FM','MD','MC','MN','ME','MS','MA','MZ','MM','NA','NR','NP','NL','AN','NC','NZ','NI','NE','NG','NU','KP','MP','NO','OM','PK','PW','PS','PA','PG','PY','PE','PH','PN','PL','PT','PR','QA','CG','RE','RO','RU','RW','BL','SH','KN','LC','MF','PM','VC','WS','SM','ST','SA','SN','RS','SC','SL','SG','SX','SK','SI','SB','SO','ZA','KR','SS','ES','LK','SD','SR','SJ','SZ','SE','CH','SY','TW','TJ','TZ','TH','TG','TK','TO','TT','TN','TR','TM','TC','TV','VI','UG','UA','AE','GB','US','UY','UZ','VU','VA','VE','VN','WF','EH','YE','ZM','ZW'])[floor(random() * 240) + 1],
+    (ARRAY['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo', 'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'])[floor(random() * 12) + 1]
+FROM generate_series(1, 10000000);
+
+-- query without index
+SELECT country, star_sign, count(*) FROM users GROUP BY country, star_sign;
+--                                      query                                      |  total_exec_time   |   mean_exec_time   | calls | rows  
+-- --------------------------------------------------------------------------------+--------------------+--------------------+-------+-------
+--  SELECT country, star_sign, count(*) FROM users GROUP BY country, star_sign     |  5939.052599999999 | 1187.8105199999998 |     5 | 14400
+
+-- create index
+CREATE INDEX idx_users_country_star_sign ON users (country, star_sign);
+SELECT country, star_sign, count(*) FROM users GROUP BY country, star_sign;
+--                                    query                                    |  total_exec_time  |  mean_exec_time   | calls | rows  
+-- ----------------------------------------------------------------------------+-------------------+-------------------+-------+-------
+--  SELECT country, star_sign, count(*) FROM users GROUP BY country, star_sign | 4343.040800000001 | 723.8401333333334 |     6 | 17280
+
+-- DEMO: GROUP BY 2 fields with WHERE filter
+-- insert deterministic data: 100 records with country in ('VN', 'SG', 'MY') and star_sign in ('Aries', 'Taurus', 'Gemini') and first_name in ('John', 'Steve', 'Bill')
+INSERT INTO users (first_name, last_name, country, star_sign)
+SELECT 
+    (ARRAY['John', 'Steve', 'Bill'])[floor(random() * 3) + 1],
+    md5(random()::text),
+    (ARRAY['VN', 'SG', 'MY'])[floor(random() * 3) + 1],
+    (ARRAY['Aries', 'Taurus', 'Gemini'])[floor(random() * 3) + 1]
+FROM generate_series(1, 100);
+
+-- query without index
+SELECT country, star_sign, count(*) FROM users 
+WHERE first_name IN ('John', 'Steve', 'Bill') GROUP BY country, star_sign;
+
+-- create index
+CREATE INDEX idx_users_first_name_country_star_sign ON users (first_name, country, star_sign);
+
+-- DEMO: GROUP BY 2 fields with WHERE range filter
+-- create table users (country, star_sign, balance)
+create table users (
+    user_id serial primary key,
+    country text not null,
+    star_sign text not null,
+    balance integer not null
+);
+
+-- seed data 10.000.000 records with country in 240 countries, 12 star_signs, balance in range [0, 1000]
+INSERT INTO users (country, star_sign, balance)
+SELECT
+    (ARRAY['AF','AL','DZ','AS','AD','AO','AI','AQ','AG','AR','AM','AW','AU','AT','AZ','BS','BH','BD','BB','BY','BE','BZ','BJ','BM','BT','BO','BA','BW','BR','IO','VG','BN','BG','BF','BI','KH','CM','CA','CV','KY','CF','TD','CL','CN','CX','CC','CO','KM','CK','CR','HR','CU','CW','CY','CZ','CD','DK','DJ','DM','DO','TL','EC','EG','SV','GQ','ER','EE','ET','FK','FO','FJ','FI','FR','PF','GA','GM','GE','DE','GH','GI','GR','GL','GD','GU','GT','GG','GN','GW','GY','HT','HN','HK','HU','IS','IN','ID','IR','IQ','IE','IM','IL','IT','CI','JM','JP','JE','JO','KZ','KE','KI','XK','KW','KG','LA','LV','LB','LS','LR','LY','LI','LT','LU','MO','MK','MG','MW','MY','MV','ML','MT','MH','MR','MU','YT','MX','FM','MD','MC','MN','ME','MS','MA','MZ','MM','NA','NR','NP','NL','AN','NC','NZ','NI','NE','NG','NU','KP','MP','NO','OM','PK','PW','PS','PA','PG','PY','PE','PH','PN','PL','PT','PR','QA','CG','RE','RO','RU','RW','BL','SH','KN','LC','MF','PM','VC','WS','SM','ST','SA','SN','RS','SC','SL','SG','SX','SK','SI','SB','SO','ZA','KR','SS','ES','LK','SD','SR','SJ','SZ','SE','CH','SY','TW','TJ','TZ','TH','TG','TK','TO','TT','TN','TR','TM','TC','TV','VI','UG','UA','AE','GB','US','UY','UZ','VU','VA','VE','VN','WF','EH','YE','ZM','ZW'])[floor(random() * 240) + 1],
+    (ARRAY['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo', 'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'])[floor(random() * 12) + 1],
+    floor(random() * 1000)
+FROM generate_series(1, 10000000);
+
+-- query without index
+SELECT country, star_sign, count(*) FROM users 
+WHERE balance BETWEEN 0 AND 300 GROUP BY country, star_sign;
+SELECT country, star_sign, count(*) FROM users 
+WHERE balance BETWEEN 301 AND 700 GROUP BY country, star_sign;
+SELECT country, star_sign, count(*) FROM users 
+WHERE balance BETWEEN 701 AND 1000 GROUP BY country, star_sign;
+-- => ~ 783ms
+
+-- create index on (balance, country, star_sign)
+CREATE INDEX idx_users_balance_country_star_sign ON users (balance, country, star_sign);
+-- => ~ 611 ms (did enhance performance but not much)
+
+-- experiment: create index on (country, star_sign, balance)
+DROP INDEX idx_users_balance_country_star_sign;
+CREATE INDEX idx_users_country_star_sign_balance ON users (country, star_sign, balance);
+-- => ~ 835ms (not good)
+
+-- experiment: calculated column `balance_range` and create index on (country, star_sign, balance_range)
+ALTER TABLE users 
+ADD COLUMN balance_range INTEGER GENERATED ALWAYS AS (
+    CASE WHEN balance BETWEEN 0 AND 300 THEN 1 
+    WHEN balance BETWEEN 301 AND 700 THEN 2 
+    WHEN balance BETWEEN 701 AND 1000 THEN 3 END
+) STORED;
+CREATE INDEX idx_users_balance_range_country_star_sign ON users (balance_range, country, star_sign);
+
+-- using avg to calculate average balance of each group (country, star_sign)
+
+-- query without index
+SELECT country, star_sign, avg(balance) FROM users 
+WHERE balance BETWEEN 0 AND 300 GROUP BY country, star_sign;
+
+-- create index on (country, star_sign, balance)
+CREATE INDEX idx_users_country_star_sign_balance ON users (country, star_sign, balance);
+
+```
+
+#### Indexes applied for JOIN
+```sql
+-- create table employees, departments
+CREATE TABLE departments (
+    department_id SERIAL PRIMARY KEY,
+    country TEXT NOT NULL,
+    name TEXT NOT NULL
+);
+
+CREATE TABLE employees (
+    employee_id SERIAL PRIMARY KEY,
+    salary DECIMAL NOT NULL,
+    department_id INTEGER NOT NULL REFERENCES departments(department_id)
+);
+
+
+-- seed data 1.000 departments of 50 countries
+INSERT INTO departments (country, name)
+SELECT 
+    (ARRAY[
+  'AF', 'AL', 'DZ', 'AS', 'AD', 'AO',
+  'AI', 'AQ', 'AG', 'AR', 'AM', 'AW',
+  'AU', 'AT', 'AZ', 'BS', 'BH', 'BD',
+  'BB', 'BY', 'BE', 'BZ', 'BJ', 'BM',
+  'BT', 'BO', 'BA', 'BW', 'BR', 'IO',
+  'VG', 'BN', 'BG', 'BF', 'BI', 'KH',
+  'CM', 'CA', 'CV', 'KY', 'CF', 'TD',
+  'CL', 'CN', 'CX', 'CC', 'CO', 'KM',
+  'CK', 'CR'
+])[floor(random() * 50) + 1],
+    md5(random()::text)
+FROM generate_series(1, 1000);
+
+-- insert 1.000.000 employees with salary in range [1000, 2000] and department_id in range [1, 1000]
+INSERT INTO employees (salary, department_id)
+SELECT 
+    (random() * 1000 + 1000)::integer,
+    floor(random() * 1000) + 1
+FROM generate_series(1, 1000000);
+
+-- query employees with salary > 1500 and department.country = 'AU'
+SELECT employees.employee_id, employees.salary, departments.country, departments.name
+FROM employees
+INNER JOIN departments ON employees.department_id = departments.department_id
+WHERE employees.salary > 1500 AND departments.country = 'AU';
+
+-- create index on (salary)
+CREATE INDEX idx_employees_salary ON employees (salary);
+-- create index on (country, department_id)
+CREATE INDEX idx_departments_country_department_id ON departments (country, department_id);
+-- still slow
+-- game changer:
+CREATE INDEX idx_employees_department_id_salary ON employees (department_id, salary);
+```
