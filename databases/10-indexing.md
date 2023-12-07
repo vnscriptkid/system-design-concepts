@@ -669,3 +669,105 @@ CREATE INDEX idx_departments_country_department_id ON departments (country, depa
 -- game changer:
 CREATE INDEX idx_employees_department_id_salary ON employees (department_id, salary);
 ```
+
+### Index applied for subquery
+```sql
+-- given this query
+SELECT *
+FROM products
+WHERE remaining > 500 AND category_id = (
+  SELECT category_id
+  FROM categories
+  WHERE type = 'game' AND name = '83f23e1bdccd70ad8b691b24b0e83f59'
+)
+
+-- create table products, categories
+CREATE TABLE categories (
+    category_id SERIAL PRIMARY KEY,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL
+);
+
+CREATE TABLE products (
+    product_id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    remaining INTEGER NOT NULL,
+    category_id INTEGER NOT NULL REFERENCES categories(category_id)
+);
+
+-- seed data 1000 categories of 10 types
+INSERT INTO categories (type, name)
+SELECT 
+    (ARRAY['book', 'movie', 'music', 'game', 'food', 'drink', 'clothes', 'shoes', 'accessories', 'electronics'])[floor(random() * 10) + 1],
+    md5(random()::text)
+FROM generate_series(1, 1000);
+
+-- seed data 1.000.000 products with remaining in range [0, 1000] and category_id in range [1, 1000]
+INSERT INTO products (name, remaining, category_id)
+SELECT 
+    md5(random()::text),
+    floor(random() * 1000),
+    floor(random() * 1000) + 1
+FROM generate_series(1, 1000000);
+
+-- no index at all: 50ms
+
+-- create index on categories (type, name)
+CREATE INDEX idx_categories_type_name ON categories (type, name); -- 42ms
+
+-- create index on categories (name, type, category_id)
+CREATE INDEX idx_categories_name_type_category_id ON categories (name, type, category_id); -- chosen by optimizer
+
+-- create index on products (category_id, remaining)
+CREATE INDEX idx_products_category_id_remaining ON products (category_id, remaining); -- extremely fast 1ms
+
+-- experiment: create index on products (remaining, category_id)
+DROP INDEX idx_products_category_id_remaining;
+CREATE INDEX idx_products_remaining_category_id ON products (remaining, category_id); -- 20ms
+
+```
+
+#### Index applied for dependent subquery
+```sql
+-- given this query: nested loop
+-- for each matching product, run a loop to check if there is any sale in the last 6 months in sales table
+SELECT *
+FROM products
+WHERE remaining = 0 AND EXISTS (
+  SELECT *
+  FROM sales
+  WHERE created_at >= '2023-06-01' AND product_id = products.product_id
+);
+
+-- create sales table
+CREATE TABLE sales (
+    sale_id SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(product_id),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+-- seed data 1.000.000 sales with created_at in range ['2023-01-01', '2024-01-01'] and product_id in range [1, 1000000]
+INSERT INTO sales (product_id, created_at)
+SELECT 
+    floor(random() * 1000000) + 1,
+    timestamp '2023-01-01' + interval '1 minute' * (random() * 525600)
+FROM generate_series(1, 1000000);
+
+-- without index: 160ms
+-- create index on sales products(remaining)
+CREATE INDEX idx_products_remaining ON products (remaining); -- index not used
+
+-- experiment: create index on sales (remaining, product_id)
+CREATE INDEX idx_products_remaining_product_id ON products (remaining, product_id); -- index not used
+
+-- experiment: create index on sales (product_id, created_at)
+CREATE INDEX idx_sales_product_id_created_at ON sales (product_id, created_at); -- 3ms
+-- 2 indexes are used: `idx_products_remaining` and `idx_sales_product_id_created_at`
+
+-- experiment: drop index idx_products_remaining
+DROP INDEX idx_products_remaining;
+-- fallback to idx_products_remaining_product_id
+
+-- experiment: drop index idx_products_remaining_product_id
+-- becomes slow 60ms
+```
